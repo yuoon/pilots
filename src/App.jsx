@@ -55,7 +55,7 @@ const ICONS = {
 function DifficultyBadge({ difficulty }) {
   const s = DIFFICULTY_STYLES[difficulty] || DIFFICULTY_STYLES.Medium
   return (
-    <span className="text-xs font-semibold px-2 py-0.5 rounded-full" style={{ background: s.bg, color: s.text }}>
+    <span style={{ fontSize: '11px', fontWeight: 600, padding: '2px 8px', borderRadius: '9999px', background: s.bg, color: s.text }}>
       {difficulty}
     </span>
   )
@@ -63,7 +63,7 @@ function DifficultyBadge({ difficulty }) {
 
 function BoroughTag({ borough }) {
   return (
-    <span className="text-xs font-medium px-2 py-0.5 rounded-full text-white" style={{ background: BOROUGH_COLORS[borough] || '#888' }}>
+    <span style={{ fontSize: '11px', fontWeight: 500, padding: '2px 8px', borderRadius: '9999px', color: '#fff', background: BOROUGH_COLORS[borough] || '#888' }}>
       {borough}
     </span>
   )
