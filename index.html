@@ -5,14 +5,41 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>NYC Escape Room Explorer</title>
-    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <style>
-      @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
-      body { font-family: 'Inter', system-ui, sans-serif; background: #F9F7F4; color: #1A1A1A; }
+      *, *::before, *::after { box-sizing: border-box; }
+      html, body, #root { height: 100%; margin: 0; padding: 0; }
+      body { font-family: 'Inter', system-ui, sans-serif; background: #F9F7F4; color: #1A1A1A; -webkit-font-smoothing: antialiased; }
       .leaflet-container { width: 100%; height: 100%; }
       .leaflet-popup-content-wrapper { border-radius: 10px; padding: 0; overflow: hidden; }
       .leaflet-popup-content { margin: 0; }
+      input[type=range] { accent-color: #FF6B6B; cursor: pointer; width: 100%; }
+
+      /* App layout */
+      .main-layout {
+        display: flex;
+        flex: 1;
+        overflow: hidden;
+        flex-direction: row;
+      }
+      .map-pane {
+        position: relative;
+        flex: 0 0 60%;
+      }
+      .sidebar-pane {
+        display: flex;
+        flex-direction: column;
+        flex: 0 0 40%;
+        overflow: hidden;
+        border-left: 1px solid #E8E8E8;
+      }
+      @media (max-width: 768px) {
+        .main-layout { flex-direction: column; }
+        .map-pane { flex: 0 0 260px; }
+        .sidebar-pane { flex: 1; border-left: none; border-top: 1px solid #E8E8E8; }
+      }
     </style>
   </head>
   <body>

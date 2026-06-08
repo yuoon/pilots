@@ -167,7 +167,7 @@ export default function App() {
   }, [])
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', overflow: 'hidden', background: '#F9F7F4', color: '#1A1A1A', fontFamily: 'Inter, system-ui, sans-serif' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', background: '#F9F7F4', color: '#1A1A1A', fontFamily: 'Inter, system-ui, sans-serif' }}>
       {/* Header */}
       <header style={{ flexShrink: 0, padding: '12px 20px', borderBottom: '1px solid #E8E8E8', display: 'flex', alignItems: 'center', gap: '12px', background: '#F9F7F4' }}>
         <div style={{ fontSize: '18px', fontWeight: 700, letterSpacing: '-0.02em' }}>
@@ -177,10 +177,9 @@ export default function App() {
       </header>
 
       {/* Main */}
-      <div style={{ display: 'flex', flex: 1, overflow: 'hidden', flexDirection: window.innerWidth < 768 ? 'column' : 'row' }}
-        className="main-layout">
+      <div className="main-layout">
         {/* Map */}
-        <div style={{ position: 'relative', flex: '0 0 60%', minHeight: '260px' }} className="map-pane">
+        <div className="map-pane">
           <MapContainer
             center={[40.7300, -73.9650]}
             zoom={11}
@@ -220,7 +219,7 @@ export default function App() {
         </div>
 
         {/* Sidebar */}
-        <div style={{ display: 'flex', flexDirection: 'column', flex: '0 0 40%', overflow: 'hidden', borderLeft: '1px solid #E8E8E8' }} className="sidebar-pane">
+        <div className="sidebar-pane">
           {/* Filters */}
           <div style={{ flexShrink: 0, padding: '16px', borderBottom: '1px solid #F0F0F0', display: 'flex', flexDirection: 'column', gap: '14px' }}>
             {/* Borough */}
@@ -334,13 +333,6 @@ export default function App() {
         </div>
       </div>
 
-      <style>{`
-        @media (max-width: 768px) {
-          .main-layout { flex-direction: column !important; }
-          .map-pane { flex: 0 0 260px !important; }
-          .sidebar-pane { flex: 1 !important; border-left: none !important; border-top: 1px solid #E8E8E8; }
-        }
-      `}</style>
     </div>
   )
 }
