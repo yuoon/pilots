@@ -126,7 +126,7 @@ Given ${filmList.length} films from a user's Letterboxd watch history, generate 
 Films:
 ${JSON.stringify(filmList, null, 2)}
 
-Generate ${Math.min(filmList.length * 3, 30)} questions total, mixing 5 types:
+Generate ${Math.min(filmList.length * 2, 20)} questions total (2 per film), mixing 5 types:
 
 WHO_DIRECTED — "Who directed [Film]?" · 3 wrong answers: plausible directors from same era/genre/nationality
 YEAR_RELEASED — "When was [Film] released?" · 3 wrong answers: years within ±4 years
@@ -162,7 +162,7 @@ Return ONLY a valid JSON array (no markdown fences, no extra text):
     },
     body: JSON.stringify({
       model: CLAUDE_MODEL,
-      max_tokens: 4096,
+      max_tokens: 6000,
       messages: [{ role: 'user', content: prompt }],
     }),
   })
@@ -175,7 +175,26 @@ Return ONLY a valid JSON array (no markdown fences, no extra text):
   const data = await res.json()
   let text = data.content?.[0]?.text?.trim() || ''
   text = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim()
-  const questions = JSON.parse(text)
+
+  // If the response was truncated, recover whatever complete objects exist
+  let questions
+  try {
+    questions = JSON.parse(text)
+  } catch {
+    // Find the last complete JSON object (ends with }) before the truncation
+    const lastBrace = text.lastIndexOf('},')
+    if (lastBrace > 0) {
+      try {
+        questions = JSON.parse(text.slice(0, lastBrace + 1) + ']')
+      } catch {
+        throw new Error('Claude returned malformed JSON. Please try again.')
+      }
+    } else {
+      throw new Error('Claude returned malformed JSON. Please try again.')
+    }
+  }
+
+  if (!questions?.length) throw new Error('No questions returned. Please try again.')
   lsSet(cacheKey, questions)
   return questions
 }
