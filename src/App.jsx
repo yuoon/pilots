@@ -1,406 +1,492 @@
-import { useState, useReducer, useEffect, useRef, useCallback } from 'react'
-import { MapContainer, TileLayer, Marker, Popup, useMap } from 'react-leaflet'
-import L from 'leaflet'
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
+import { GoogleMap, Marker, InfoWindow, Polyline, useJsApiLoader } from '@react-google-maps/api'
+import { ROUTES, ROUTE_COLORS, BONUS_STOPS, CHALLENGE_ITEMS } from './data'
 
-const ROOMS = [
-  { id: 1, name: "Komnata Quest", neighborhood: "Greenpoint", borough: "Brooklyn", lat: 40.7282, lng: -73.9512, difficulty: "Expert", immersive: true, duration: 60, pricePerPerson: 35, themes: ["Horror", "Live Actors"], rooms: ["Suicide Hotel", "Doctor Frankenstein"], rating: 4.9 },
-  { id: 2, name: "MyssTic Escape", neighborhood: "Park Slope", borough: "Brooklyn", lat: 40.6710, lng: -73.9782, difficulty: "Medium", immersive: true, duration: 60, pricePerPerson: 28, themes: ["Mystery", "Paranormal"], rooms: ["Ghost Light"], rating: 5.0 },
-  { id: 3, name: "The Escape Game Brooklyn", neighborhood: "DUMBO", borough: "Brooklyn", lat: 40.7033, lng: -73.9893, difficulty: "Medium", immersive: true, duration: 60, pricePerPerson: 39, themes: ["Adventure", "Heist"], rooms: ["Gold Rush", "Prison Break"], rating: 5.0 },
-  { id: 4, name: "Peddlers and Parchment", neighborhood: "Midwood", borough: "Brooklyn", lat: 40.6237, lng: -73.9637, difficulty: "Easy", immersive: false, duration: 60, pricePerPerson: 25, themes: ["Fantasy", "Family"], rooms: ["The Sorcerer's Study"], rating: 5.0 },
-  { id: 5, name: "The Great Escape Room Queens", neighborhood: "Rego Park", borough: "Queens", lat: 40.7282, lng: -73.8620, difficulty: "Medium", immersive: true, duration: 60, pricePerPerson: 30, themes: ["Horror", "Zombie", "Arcade"], rooms: ["Haunted Knickerbocker", "Zombie Room", "Arcade Challenge"], rating: 4.7 },
-  { id: 6, name: "BrainXcape", neighborhood: "Financial District", borough: "Manhattan", lat: 40.7074, lng: -74.0113, difficulty: "Expert", immersive: true, duration: 60, pricePerPerson: 38, themes: ["Horror", "Thriller"], rooms: ["Rikers 1932", "Haunted Hotel", "Elevator To Hell"], rating: 4.9 },
-  { id: 7, name: "Escape The Room NYC", neighborhood: "Flatiron", borough: "Manhattan", lat: 40.7401, lng: -73.9903, difficulty: "Medium", immersive: true, duration: 60, pricePerPerson: 44, themes: ["Sci-Fi", "Office", "Dinosaurs"], rooms: ["The Office", "Jurassic Escape", "Outbreak", "The Agency"], rating: 4.8 },
-  { id: 8, name: "Mission Escape Games", neighborhood: "Garment District", borough: "Manhattan", lat: 40.7530, lng: -73.9968, difficulty: "Hard", immersive: true, duration: 60, pricePerPerson: 36, themes: ["Sci-Fi", "Mystery"], rooms: ["Carbon: 3708", "Hydeout"], rating: 4.8 },
-  { id: 9, name: "Escapology NYC", neighborhood: "Midtown", borough: "Manhattan", lat: 40.7587, lng: -73.9787, difficulty: "Medium", immersive: true, duration: 60, pricePerPerson: 40, themes: ["Pirate", "Murder Mystery"], rooms: ["A Pirate's Curse", "Masquerade"], rating: 4.8 },
-  { id: 10, name: "PanIQ Room Manhattan", neighborhood: "Midtown", borough: "Manhattan", lat: 40.7484, lng: -73.9878, difficulty: "Expert", immersive: true, duration: 60, pricePerPerson: 35, themes: ["Pirate", "Adventure"], rooms: ["Hades' Plunder"], rating: 4.7 },
-  { id: 11, name: "Clue Chase", neighborhood: "Koreatown", borough: "Manhattan", lat: 40.7490, lng: -73.9878, difficulty: "Easy", immersive: false, duration: 60, pricePerPerson: 28, themes: ["Spy", "Historical", "Heist"], rooms: ["Cold War", "Egyptian Tomb", "Robin Hood Heist", "1920s Speakeasy"], rating: 4.7 },
-  { id: 12, name: "Exit Escape Room NYC", neighborhood: "Upper East Side", borough: "Manhattan", lat: 40.7680, lng: -73.9640, difficulty: "Medium", immersive: true, duration: 60, pricePerPerson: 32, themes: ["Family", "Thriller"], rooms: ["Sugar Rush", "Train Heist"], rating: 4.6 },
-  { id: 13, name: "Escape Room Madness", neighborhood: "Midtown", borough: "Manhattan", lat: 40.7549, lng: -73.9840, difficulty: "Medium", immersive: false, duration: 60, pricePerPerson: 30, themes: ["Mystery", "Adventure"], rooms: ["6 private rooms"], rating: 4.6 },
-]
+const GOOGLE_MAPS_API_KEY = import.meta.env.VITE_GOOGLE_MAPS_API_KEY || ''
 
-const BOROUGH_COLORS = {
-  Brooklyn: '#FF6B6B',
-  Manhattan: '#7FB069',
-  Queens: '#C5A3D5',
+const CENTER = { lat: 40.7280, lng: -73.9900 }
+
+const VALID_ROUTE_PARAMS = new Set(['1', '2', 'both'])
+
+function getInitialRouteParam() {
+  const value = new URLSearchParams(window.location.search).get('route')
+  return VALID_ROUTE_PARAMS.has(value) ? value : 'both'
 }
 
-const DIFFICULTY_STYLES = {
-  Easy:   { bg: '#D1FAE5', text: '#065F46' },
-  Medium: { bg: '#FEF3C7', text: '#92400E' },
-  Hard:   { bg: '#FFEDD5', text: '#9A3412' },
-  Expert: { bg: '#FEE2E2', text: '#991B1B' },
+// Route 2 shares two addresses with Route 1 (Strand, Housing Works). Nudge
+// Route 2's copy slightly so both markers stay visible when both routes show.
+function stopPosition(routeId, stop) {
+  if (routeId === 2) {
+    return { lat: stop.lat - 0.00007, lng: stop.lng + 0.00014 }
+  }
+  return { lat: stop.lat, lng: stop.lng }
 }
 
-const DURATIONS = [45, 60, 75, 90]
+function buildDirectionsUrl(route) {
+  const stops = route.stops
+  const origin = `${stops[0].lat},${stops[0].lng}`
+  const destination = `${stops[stops.length - 1].lat},${stops[stops.length - 1].lng}`
+  const waypoints = stops.slice(1, -1).map(s => `${s.lat},${s.lng}`).join('|')
+  const params = new URLSearchParams({ api: '1', origin, destination, travelmode: 'walking' })
+  if (waypoints) params.set('waypoints', waypoints)
+  return `https://www.google.com/maps/dir/?${params.toString()}`
+}
 
-function makeIcon(color) {
-  return L.divIcon({
-    className: '',
-    html: `<svg width="28" height="36" viewBox="0 0 28 36" fill="none" xmlns="http://www.w3.org/2000/svg">
-      <path d="M14 0C6.268 0 0 6.268 0 14C0 24.5 14 36 14 36C14 36 28 24.5 28 14C28 6.268 21.732 0 14 0Z" fill="${color}" stroke="white" stroke-width="2"/>
-      <circle cx="14" cy="14" r="5" fill="white"/>
-    </svg>`,
-    iconSize: [28, 36],
-    iconAnchor: [14, 36],
-    popupAnchor: [0, -38],
+function buildStopMapsUrl(stop) {
+  const params = new URLSearchParams({
+    api: '1',
+    query: `${stop.lat},${stop.lng}`,
+    query_place_id: '',
   })
+  return `https://www.google.com/maps/search/?${params.toString()}`
 }
 
-const ICONS = {
-  Brooklyn: makeIcon(BOROUGH_COLORS.Brooklyn),
-  Manhattan: makeIcon(BOROUGH_COLORS.Manhattan),
-  Queens: makeIcon(BOROUGH_COLORS.Queens),
+function buildShareUrl(routeParam) {
+  const url = new URL(window.location.href)
+  url.search = ''
+  if (routeParam !== 'both') url.searchParams.set('route', routeParam)
+  return url.toString()
 }
 
-function DifficultyBadge({ difficulty }) {
-  const s = DIFFICULTY_STYLES[difficulty] || DIFFICULTY_STYLES.Medium
-  return (
-    <span style={{ fontSize: '11px', fontWeight: 600, padding: '2px 8px', borderRadius: '9999px', background: s.bg, color: s.text }}>
-      {difficulty}
-    </span>
-  )
-}
-
-function BoroughTag({ borough }) {
-  return (
-    <span style={{ fontSize: '11px', fontWeight: 500, padding: '2px 8px', borderRadius: '9999px', color: '#fff', background: BOROUGH_COLORS[borough] || '#888' }}>
-      {borough}
-    </span>
-  )
-}
-
-function PopupCard({ room }) {
-  return (
-    <div style={{ padding: '12px', minWidth: '200px', maxWidth: '240px', fontFamily: 'Inter, system-ui, sans-serif' }}>
-      <div style={{ fontWeight: 600, fontSize: '13px', color: '#1A1A1A', lineHeight: 1.3, marginBottom: '4px' }}>{room.name}</div>
-      <div style={{ fontSize: '11px', color: '#888', marginBottom: '8px' }}>{room.neighborhood}</div>
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', marginBottom: '8px' }}>
-        <DifficultyBadge difficulty={room.difficulty} />
-        {room.immersive && (
-          <span style={{ fontSize: '11px', background: '#F3E8FF', color: '#7C3AED', fontWeight: 500, padding: '2px 8px', borderRadius: '9999px' }}>🎭 Immersive</span>
-        )}
-      </div>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '12px', color: '#555' }}>
-        <span style={{ fontWeight: 600, color: '#1A1A1A' }}>${room.pricePerPerson}/pp</span>
-        <span>{room.duration} min</span>
-        <span style={{ color: '#F59E0B', fontWeight: 600 }}>★ {room.rating.toFixed(1)}</span>
-      </div>
-      {room.rooms.length > 0 && (
-        <div style={{ marginTop: '8px', paddingTop: '8px', borderTop: '1px solid #F0F0F0' }}>
-          <div style={{ fontSize: '11px', color: '#aaa', marginBottom: '4px' }}>Rooms:</div>
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '3px' }}>
-            {room.rooms.map(r => (
-              <span key={r} style={{ fontSize: '11px', background: '#F5F5F5', color: '#555', padding: '2px 6px', borderRadius: '4px' }}>{r}</span>
-            ))}
-          </div>
-        </div>
-      )}
-    </div>
-  )
-}
-
-function FlyToRoom({ room }) {
-  const map = useMap()
-  useEffect(() => {
-    if (room) map.flyTo([room.lat, room.lng], 15, { duration: 0.8 })
-  }, [room, map])
-  return null
-}
-
-function OpenMarkerPopup({ selectedRoom, markerRefs }) {
-  const map = useMap()
-  useEffect(() => {
-    if (selectedRoom && markerRefs.current[selectedRoom.id]) {
-      setTimeout(() => {
-        markerRefs.current[selectedRoom.id]?.openPopup()
-      }, 900)
-    }
-  }, [selectedRoom, map, markerRefs])
-  return null
-}
-
-const initialFilters = {
-  borough: 'All',
-  difficulty: 'All',
-  immersiveOnly: false,
-  durations: [],
-  maxPrice: 60,
-}
-
-function filtersReducer(state, action) {
-  switch (action.type) {
-    case 'SET_BOROUGH': return { ...state, borough: action.value }
-    case 'SET_DIFFICULTY': return { ...state, difficulty: action.value }
-    case 'TOGGLE_IMMERSIVE': return { ...state, immersiveOnly: !state.immersiveOnly }
-    case 'TOGGLE_DURATION': {
-      const d = action.value
-      const durations = state.durations.includes(d)
-        ? state.durations.filter(x => x !== d)
-        : [...state.durations, d]
-      return { ...state, durations }
-    }
-    case 'SET_MAX_PRICE': return { ...state, maxPrice: action.value }
-    default: return state
+function makeNumberedIcon(color, label, { big } = {}) {
+  const size = big ? 34 : 28
+  const fontSize = big ? 14 : 12
+  const svg = `
+    <svg width="${size}" height="${size}" viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg">
+      <circle cx="20" cy="20" r="17" fill="${color}" stroke="white" stroke-width="3"/>
+      <text x="20" y="26" text-anchor="middle" font-family="Inter, system-ui, sans-serif" font-size="${fontSize * 1.4}" font-weight="700" fill="white">${label}</text>
+    </svg>`
+  return {
+    url: `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`,
+    scaledSize: new window.google.maps.Size(size, size),
+    anchor: new window.google.maps.Point(size / 2, size / 2),
   }
 }
 
-function applyFilters(rooms, filters) {
-  return rooms.filter(r => {
-    if (filters.borough !== 'All' && r.borough !== filters.borough) return false
-    if (filters.difficulty !== 'All' && r.difficulty !== filters.difficulty) return false
-    if (filters.immersiveOnly && !r.immersive) return false
-    if (filters.durations.length > 0 && !filters.durations.includes(r.duration)) return false
-    if (r.pricePerPerson > filters.maxPrice) return false
-    return true
-  })
+function makeBonusIcon(emoji) {
+  const svg = `
+    <svg width="30" height="30" viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg">
+      <circle cx="20" cy="20" r="17" fill="#FDF8F0" stroke="#C9A86A" stroke-width="2.5"/>
+      <text x="20" y="27" text-anchor="middle" font-size="18">${emoji}</text>
+    </svg>`
+  return {
+    url: `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`,
+    scaledSize: new window.google.maps.Size(30, 30),
+    anchor: new window.google.maps.Point(15, 15),
+  }
 }
 
 export default function App() {
-  const [filters, dispatch] = useReducer(filtersReducer, initialFilters)
-  const [selectedRoom, setSelectedRoom] = useState(null)
-  const markerRefs = useRef({})
+  const { isLoaded, loadError } = useJsApiLoader({
+    id: 'nyc-book-crawl-map',
+    googleMapsApiKey: GOOGLE_MAPS_API_KEY,
+  })
 
-  const filtered = applyFilters(ROOMS, filters)
+  const [routeParam, setRouteParam] = useState(getInitialRouteParam)
+  const [activeStopId, setActiveStopId] = useState(null)
+  const [showBonus, setShowBonus] = useState(true)
+  const [shareStatus, setShareStatus] = useState('idle')
+  const [checked, setChecked] = useState(() => CHALLENGE_ITEMS.map(() => false))
+  const mapRef = useRef(null)
 
-  const handleSelectRoom = useCallback((room) => {
-    setSelectedRoom(room)
+  const visibleRouteIds = routeParam === 'both' ? [1, 2] : [Number(routeParam)]
+
+  useEffect(() => {
+    const url = new URL(window.location.href)
+    if (routeParam === 'both') url.searchParams.delete('route')
+    else url.searchParams.set('route', routeParam)
+    window.history.replaceState({}, '', url)
+  }, [routeParam])
+
+  const stopIndex = useMemo(() => {
+    const map = {}
+    Object.values(ROUTES).forEach(route => {
+      route.stops.forEach(stop => {
+        map[stop.id] = { stop, route }
+      })
+    })
+    BONUS_STOPS.forEach(stop => {
+      map[stop.id] = { stop, bonus: true }
+    })
+    return map
   }, [])
 
+  const fitToVisible = useCallback((map, ids, bonus) => {
+    if (!window.google) return
+    const bounds = new window.google.maps.LatLngBounds()
+    let any = false
+    ids.forEach(routeId => {
+      ROUTES[routeId].stops.forEach(stop => {
+        bounds.extend(stopPosition(routeId, stop))
+        any = true
+      })
+    })
+    if (bonus) {
+      BONUS_STOPS.forEach(stop => {
+        bounds.extend({ lat: stop.lat, lng: stop.lng })
+        any = true
+      })
+    }
+    if (any) map.fitBounds(bounds, 48)
+  }, [])
+
+  const onMapLoad = useCallback(map => {
+    mapRef.current = map
+    fitToVisible(map, visibleRouteIds, showBonus)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  useEffect(() => {
+    if (mapRef.current) fitToVisible(mapRef.current, visibleRouteIds, showBonus)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [routeParam, showBonus, isLoaded])
+
+  const goToStop = useCallback((stop, routeId) => {
+    setActiveStopId(stop.id)
+    if (mapRef.current) {
+      mapRef.current.panTo(routeId ? stopPosition(routeId, stop) : { lat: stop.lat, lng: stop.lng })
+      mapRef.current.setZoom(16)
+    }
+  }, [])
+
+  const handleShare = useCallback(async () => {
+    const url = buildShareUrl(routeParam)
+    const routeName = routeParam === 'both' ? 'Both Routes' : ROUTES[routeParam].name
+    const shareData = { title: `NYC Book Crawl — ${routeName}`, text: 'A literary walking tour of Lower Manhattan indie bookstores.', url }
+    if (navigator.share) {
+      try {
+        await navigator.share(shareData)
+      } catch {
+        // user cancelled — nothing to do
+      }
+      return
+    }
+    try {
+      await navigator.clipboard.writeText(url)
+      setShareStatus('copied')
+      setTimeout(() => setShareStatus('idle'), 2000)
+    } catch {
+      // clipboard unavailable — nothing to do
+    }
+  }, [routeParam])
+
+  const active = activeStopId ? stopIndex[activeStopId] : null
+
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', background: '#F9F7F4', color: '#1A1A1A', fontFamily: 'Inter, system-ui, sans-serif' }}>
-      {/* Header */}
-      <header style={{ flexShrink: 0, padding: '12px 20px', borderBottom: '1px solid #E8E8E8', display: 'flex', alignItems: 'center', gap: '12px', background: '#F9F7F4' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', background: '#FDF8F0', color: '#1A1A1A', fontFamily: 'Inter, system-ui, sans-serif' }}>
+      <header style={{ flexShrink: 0, padding: '12px 20px', borderBottom: '1px solid #E9E0CC', display: 'flex', alignItems: 'center', gap: '14px', flexWrap: 'wrap', background: '#FDF8F0' }}>
         <div style={{ fontSize: '18px', fontWeight: 700, letterSpacing: '-0.02em' }}>
-          NYC <span style={{ color: '#FF6B6B' }}>Escape Room</span> Explorer
+          📖 NYC <span style={{ color: '#1B3A5C' }}>Book</span> <span style={{ color: '#2E6B4F' }}>Crawl</span>
         </div>
-        <div style={{ marginLeft: 'auto', fontSize: '12px', color: '#999' }}>{ROOMS.length} venues across NYC</div>
+        <RouteTabs routeParam={routeParam} setRouteParam={setRouteParam} />
+        <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', color: '#555', cursor: 'pointer' }}>
+          <input type="checkbox" checked={showBonus} onChange={e => setShowBonus(e.target.checked)} />
+          Bonus stops
+        </label>
+        <button onClick={handleShare} style={shareButtonStyle}>
+          {shareStatus === 'copied' ? '✓ Link copied' : '🔗 Share'}
+        </button>
       </header>
 
-      {/* Main */}
       <div className="main-layout">
-        {/* Map */}
         <div className="map-pane">
-          <MapContainer
-            center={[40.7300, -73.9650]}
-            zoom={11}
-            style={{ width: '100%', height: '100%' }}
-            scrollWheelZoom={true}
-          >
-            <TileLayer
-              attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
-              url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-            />
-            {filtered.map(room => (
-              <Marker
-                key={room.id}
-                position={[room.lat, room.lng]}
-                icon={ICONS[room.borough] || ICONS.Manhattan}
-                ref={el => { markerRefs.current[room.id] = el }}
-                eventHandlers={{ click: () => setSelectedRoom(room) }}
-              >
-                <Popup>
-                  <PopupCard room={room} />
-                </Popup>
-              </Marker>
-            ))}
-            {selectedRoom && <FlyToRoom room={selectedRoom} />}
-            {selectedRoom && <OpenMarkerPopup selectedRoom={selectedRoom} markerRefs={markerRefs} />}
-          </MapContainer>
-
-          {/* Legend */}
-          <div style={{ position: 'absolute', bottom: '12px', right: '12px', zIndex: 1000, background: '#fff', borderRadius: '10px', padding: '8px 12px', boxShadow: '0 2px 8px rgba(0,0,0,0.12)' }}>
-            {Object.entries(BOROUGH_COLORS).map(([b, c]) => (
-              <div key={b} style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11px', fontWeight: 500, marginBottom: '2px' }}>
-                <span style={{ width: '10px', height: '10px', borderRadius: '50%', background: c, display: 'inline-block' }} />
-                {b}
-              </div>
-            ))}
-          </div>
-        </div>
-
-        {/* Sidebar */}
-        <div className="sidebar-pane">
-          {/* Filters */}
-          <div style={{ flexShrink: 0, padding: '16px', borderBottom: '1px solid #F0F0F0', display: 'flex', flexDirection: 'column', gap: '14px' }}>
-            {/* Borough */}
-            <FilterGroup label="Borough">
-              {['All', 'Brooklyn', 'Manhattan', 'Queens'].map(b => (
-                <PillButton
-                  key={b}
-                  active={filters.borough === b}
-                  onClick={() => dispatch({ type: 'SET_BOROUGH', value: b })}
-                  activeStyle={{ background: b === 'All' ? '#1A1A1A' : BOROUGH_COLORS[b], color: '#fff' }}
-                >
-                  {b}
-                </PillButton>
-              ))}
-            </FilterGroup>
-
-            {/* Difficulty */}
-            <FilterGroup label="Difficulty">
-              {['All', 'Easy', 'Medium', 'Hard', 'Expert'].map(d => {
-                const s = DIFFICULTY_STYLES[d]
+          {!GOOGLE_MAPS_API_KEY && <ApiKeyNotice />}
+          {GOOGLE_MAPS_API_KEY && loadError && (
+            <div style={noticeStyle}>Google Maps failed to load. Check that <code>VITE_GOOGLE_MAPS_API_KEY</code> is valid and enabled for the Maps JavaScript API.</div>
+          )}
+          {GOOGLE_MAPS_API_KEY && !loadError && !isLoaded && (
+            <div style={noticeStyle}>Loading map…</div>
+          )}
+          {GOOGLE_MAPS_API_KEY && isLoaded && (
+            <GoogleMap
+              mapContainerStyle={{ width: '100%', height: '100%' }}
+              center={CENTER}
+              zoom={13}
+              onLoad={onMapLoad}
+              options={{
+                streetViewControl: false,
+                mapTypeControl: false,
+                fullscreenControl: true,
+                clickableIcons: false,
+                styles: MAP_STYLE,
+              }}
+              onClick={() => setActiveStopId(null)}
+            >
+              {visibleRouteIds.map(routeId => {
+                const route = ROUTES[routeId]
                 return (
-                  <PillButton
-                    key={d}
-                    active={filters.difficulty === d}
-                    onClick={() => dispatch({ type: 'SET_DIFFICULTY', value: d })}
-                    activeStyle={d === 'All' ? { background: '#1A1A1A', color: '#fff' } : { background: s.bg, color: s.text, fontWeight: 700 }}
-                  >
-                    {d}
-                  </PillButton>
+                  <Polyline
+                    key={routeId}
+                    path={route.stops.map(stop => stopPosition(routeId, stop))}
+                    options={{
+                      strokeColor: route.color,
+                      strokeOpacity: 0,
+                      icons: [{
+                        icon: { path: 'M 0,-1 0,1', strokeOpacity: 1, scale: 3 },
+                        offset: '0',
+                        repeat: '12px',
+                      }],
+                      zIndex: 1,
+                    }}
+                  />
                 )
               })}
-            </FilterGroup>
 
-            {/* Row: Immersive + Duration */}
-            <div style={{ display: 'flex', gap: '20px', flexWrap: 'wrap' }}>
-              <div>
-                <div style={{ fontSize: '10px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.08em', color: '#999', marginBottom: '6px' }}>Immersive Only</div>
-                <button
-                  onClick={() => dispatch({ type: 'TOGGLE_IMMERSIVE' })}
-                  style={{
-                    position: 'relative', display: 'inline-flex', height: '24px', width: '44px',
-                    alignItems: 'center', borderRadius: '9999px', border: 'none', cursor: 'pointer',
-                    background: filters.immersiveOnly ? '#FF6B6B' : '#D1D5DB', transition: 'background 0.2s',
-                  }}
-                  aria-label="Toggle immersive only"
-                >
-                  <span style={{
-                    display: 'inline-block', width: '18px', height: '18px', borderRadius: '50%',
-                    background: '#fff', boxShadow: '0 1px 3px rgba(0,0,0,0.2)',
-                    transform: filters.immersiveOnly ? 'translateX(22px)' : 'translateX(3px)',
-                    transition: 'transform 0.2s',
-                  }} />
-                </button>
-              </div>
+              {visibleRouteIds.flatMap(routeId => {
+                const route = ROUTES[routeId]
+                return route.stops.map(stop => (
+                  <Marker
+                    key={stop.id}
+                    position={stopPosition(routeId, stop)}
+                    icon={makeNumberedIcon(route.color, stop.order, { big: activeStopId === stop.id })}
+                    zIndex={activeStopId === stop.id ? 1000 : 10}
+                    onClick={() => goToStop(stop, routeId)}
+                  />
+                ))
+              })}
 
-              <div style={{ flex: 1 }}>
-                <div style={{ fontSize: '10px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.08em', color: '#999', marginBottom: '6px' }}>Duration</div>
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
-                  {DURATIONS.map(d => (
-                    <PillButton
-                      key={d}
-                      active={filters.durations.includes(d)}
-                      onClick={() => dispatch({ type: 'TOGGLE_DURATION', value: d })}
-                      activeStyle={{ background: '#1A1A1A', color: '#fff' }}
-                    >
-                      {d}m
-                    </PillButton>
-                  ))}
-                </div>
-              </div>
-            </div>
-
-            {/* Price slider */}
-            <div>
-              <div style={{ fontSize: '10px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.08em', color: '#999', marginBottom: '6px' }}>
-                Max Price: <span style={{ color: '#FF6B6B' }}>${filters.maxPrice}/person</span>
-              </div>
-              <input
-                type="range" min={0} max={60} step={1} value={filters.maxPrice}
-                onChange={e => dispatch({ type: 'SET_MAX_PRICE', value: Number(e.target.value) })}
-                style={{ width: '100%', accentColor: '#FF6B6B', cursor: 'pointer' }}
-              />
-              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '10px', color: '#bbb', marginTop: '2px' }}>
-                <span>$0</span><span>$60</span>
-              </div>
-            </div>
-
-            {/* Count */}
-            <div style={{ fontSize: '12px', color: '#888' }}>
-              Showing <strong style={{ color: '#1A1A1A' }}>{filtered.length}</strong> of {ROOMS.length} venues
-            </div>
-          </div>
-
-          {/* Room list */}
-          <div style={{ flex: 1, overflowY: 'auto', padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
-            {filtered.length === 0 && (
-              <div style={{ textAlign: 'center', fontSize: '13px', color: '#bbb', padding: '32px 0' }}>No rooms match your filters.</div>
-            )}
-            {filtered.map(room => {
-              const isSelected = selectedRoom?.id === room.id
-              return (
-                <RoomCard
-                  key={room.id}
-                  room={room}
-                  isSelected={isSelected}
-                  onClick={() => handleSelectRoom(room)}
+              {showBonus && BONUS_STOPS.map(stop => (
+                <Marker
+                  key={stop.id}
+                  position={{ lat: stop.lat, lng: stop.lng }}
+                  icon={makeBonusIcon(stop.icon)}
+                  zIndex={5}
+                  onClick={() => goToStop(stop)}
                 />
-              )
-            })}
+              ))}
+
+              {active && (
+                <InfoWindow
+                  position={active.route ? stopPosition(active.route.id, active.stop) : { lat: active.stop.lat, lng: active.stop.lng }}
+                  onCloseClick={() => setActiveStopId(null)}
+                >
+                  <StopDetails entry={active} />
+                </InfoWindow>
+              )}
+            </GoogleMap>
+          )}
+
+          {GOOGLE_MAPS_API_KEY && isLoaded && (
+            <div style={legendStyle}>
+              {visibleRouteIds.map(routeId => (
+                <div key={routeId} style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11px', fontWeight: 600, marginBottom: '2px' }}>
+                  <span style={{ width: '14px', height: '3px', borderRadius: '2px', background: ROUTES[routeId].color, display: 'inline-block' }} />
+                  {ROUTES[routeId].subtitle}: {ROUTES[routeId].name}
+                </div>
+              ))}
+              {showBonus && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11px', color: '#999', marginTop: '2px' }}>
+                  <span>⭐</span> Bonus stops
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        <div className="sidebar-pane">
+          <div style={{ overflowY: 'auto', flex: 1, padding: '16px' }}>
+            {visibleRouteIds.map(routeId => (
+              <RouteCard
+                key={routeId}
+                route={ROUTES[routeId]}
+                activeStopId={activeStopId}
+                onSelectStop={stop => goToStop(stop, routeId)}
+              />
+            ))}
+
+            <SectionCard title="Tips & Bonus Stops">
+              {BONUS_STOPS.map(stop => (
+                <div key={stop.id} style={{ display: 'flex', gap: '8px', marginBottom: '10px', fontSize: '12px', color: '#555' }}>
+                  <span style={{ fontSize: '16px', flexShrink: 0 }}>{stop.icon}</span>
+                  <div>
+                    <div style={{ fontWeight: 600, color: '#1A1A1A' }}>{stop.name}</div>
+                    <div>{stop.note}</div>
+                  </div>
+                </div>
+              ))}
+            </SectionCard>
+
+            <SectionCard title="Book Crawl Challenge">
+              {CHALLENGE_ITEMS.map((item, i) => (
+                <label key={item} style={{ display: 'flex', alignItems: 'flex-start', gap: '8px', fontSize: '12px', color: checked[i] ? '#999' : '#333', marginBottom: '8px', cursor: 'pointer', textDecoration: checked[i] ? 'line-through' : 'none' }}>
+                  <input
+                    type="checkbox"
+                    checked={checked[i]}
+                    onChange={() => setChecked(c => c.map((v, idx) => idx === i ? !v : v))}
+                    style={{ marginTop: '2px' }}
+                  />
+                  {item}
+                </label>
+              ))}
+            </SectionCard>
           </div>
         </div>
       </div>
-
     </div>
   )
 }
 
-function FilterGroup({ label, children }) {
+function RouteTabs({ routeParam, setRouteParam }) {
+  const options = [
+    { value: '1', label: 'Route 1', color: ROUTE_COLORS[1] },
+    { value: '2', label: 'Route 2', color: ROUTE_COLORS[2] },
+    { value: 'both', label: 'Both', color: '#7A6A4F' },
+  ]
   return (
-    <div>
-      <div style={{ fontSize: '10px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.08em', color: '#999', marginBottom: '6px' }}>{label}</div>
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>{children}</div>
+    <div style={{ display: 'flex', gap: '6px' }}>
+      {options.map(opt => {
+        const active = routeParam === opt.value
+        return (
+          <button
+            key={opt.value}
+            onClick={() => setRouteParam(opt.value)}
+            style={{
+              fontSize: '12px', padding: '5px 12px', borderRadius: '9999px', border: '1px solid',
+              cursor: 'pointer', fontWeight: 600, transition: 'all 0.15s',
+              borderColor: active ? 'transparent' : '#DDD',
+              background: active ? opt.color : 'transparent',
+              color: active ? '#fff' : '#555',
+            }}
+          >
+            {opt.label}
+          </button>
+        )
+      })}
     </div>
   )
 }
 
-function PillButton({ active, onClick, activeStyle, children }) {
-  const [hovered, setHovered] = useState(false)
+function RouteCard({ route, activeStopId, onSelectStop }) {
   return (
-    <button
-      onClick={onClick}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
-      style={{
-        fontSize: '12px', padding: '4px 12px', borderRadius: '9999px', border: '1px solid',
-        cursor: 'pointer', fontWeight: 500, transition: 'all 0.15s',
-        ...(active
-          ? { borderColor: 'transparent', ...activeStyle }
-          : { background: hovered ? '#F0F0F0' : 'transparent', color: '#555', borderColor: '#DDD' }),
-      }}
-    >
+    <div style={{ marginBottom: '18px', border: `1.5px solid ${route.color}22`, borderRadius: '14px', overflow: 'hidden' }}>
+      <div style={{ background: route.color, color: '#fff', padding: '10px 14px' }}>
+        <div style={{ fontSize: '11px', opacity: 0.85, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em' }}>{route.subtitle}</div>
+        <div style={{ fontSize: '15px', fontWeight: 700 }}>{route.name}</div>
+        <div style={{ fontSize: '11px', opacity: 0.9, marginTop: '4px' }}>🚶 {route.totalWalk} · ⏱ {route.suggestedTime}</div>
+      </div>
+      <div style={{ padding: '10px 14px' }}>
+        <a
+          href={buildDirectionsUrl(route)}
+          target="_blank"
+          rel="noreferrer"
+          style={{ display: 'inline-block', fontSize: '11px', fontWeight: 600, color: route.color, marginBottom: '10px', textDecoration: 'none' }}
+        >
+          Open full walking route in Google Maps ↗
+        </a>
+        {route.stops.map(stop => {
+          const isActive = activeStopId === stop.id
+          return (
+            <div key={stop.id}>
+              <button
+                onClick={() => onSelectStop(stop)}
+                style={{
+                  width: '100%', textAlign: 'left', display: 'flex', gap: '10px', padding: '8px', borderRadius: '10px',
+                  border: 'none', cursor: 'pointer', background: isActive ? `${route.color}14` : 'transparent',
+                }}
+              >
+                <span style={{
+                  flexShrink: 0, width: '22px', height: '22px', borderRadius: '50%', background: route.color, color: '#fff',
+                  fontSize: '11px', fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                }}>{stop.order}</span>
+                <span>
+                  <div style={{ fontSize: '12.5px', fontWeight: 600, color: '#1A1A1A' }}>
+                    {stop.name}
+                    {stop.isStart && <span style={badgeStyle('#2E6B4F')}>START</span>}
+                    {stop.isFinish && <span style={badgeStyle('#B0413E')}>FINISH</span>}
+                  </div>
+                  <div style={{ fontSize: '11px', color: '#999' }}>{stop.address}</div>
+                  {stop.description && <div style={{ fontSize: '11px', color: '#666', marginTop: '2px' }}>{stop.description}</div>}
+                </span>
+              </button>
+              {stop.walkToNext && (
+                <div style={{ fontSize: '10.5px', color: '#aaa', margin: '2px 0 2px 40px' }}>
+                  🚶 {stop.walkToNext.duration} walk ({stop.walkToNext.distance}) to next stop
+                </div>
+              )}
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+function badgeStyle(color) {
+  return { fontSize: '9px', fontWeight: 700, color, background: `${color}1A`, borderRadius: '9999px', padding: '1px 6px', marginLeft: '6px', verticalAlign: 'middle' }
+}
+
+function SectionCard({ title, children }) {
+  return (
+    <div style={{ marginBottom: '18px', border: '1px solid #E9E0CC', borderRadius: '14px', padding: '12px 14px' }}>
+      <div style={{ fontSize: '11px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: '#7A6A4F', marginBottom: '10px' }}>{title}</div>
       {children}
-    </button>
+    </div>
   )
 }
 
-function RoomCard({ room, isSelected, onClick }) {
-  const [hovered, setHovered] = useState(false)
+function StopDetails({ entry }) {
+  const { stop, route, bonus } = entry
   return (
-    <button
-      onClick={onClick}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
-      style={{
-        width: '100%', textAlign: 'left', borderRadius: '12px', border: '1.5px solid',
-        padding: '12px', cursor: 'pointer', transition: 'all 0.15s',
-        background: isSelected ? '#FFF5F5' : '#fff',
-        borderColor: isSelected ? '#FF6B6B' : hovered ? '#DDD' : '#EEE',
-        boxShadow: isSelected ? '0 0 0 2px rgba(255,107,107,0.15)' : hovered ? '0 2px 8px rgba(0,0,0,0.06)' : 'none',
-      }}
-    >
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '4px' }}>
-        <span style={{ fontWeight: 600, fontSize: '13px', lineHeight: 1.3, color: '#1A1A1A' }}>{room.name}</span>
-        <span style={{ fontSize: '11px', color: '#F59E0B', fontWeight: 600, flexShrink: 0, marginLeft: '8px' }}>★ {room.rating.toFixed(1)}</span>
-      </div>
-      <div style={{ fontSize: '11px', color: '#888', marginBottom: '8px' }}>{room.neighborhood}</div>
-      <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '5px' }}>
-        <BoroughTag borough={room.borough} />
-        <DifficultyBadge difficulty={room.difficulty} />
-        {room.immersive && (
-          <span style={{ fontSize: '11px', background: '#F3E8FF', color: '#7C3AED', fontWeight: 500, padding: '2px 7px', borderRadius: '9999px' }}>🎭</span>
-        )}
-        <span style={{ marginLeft: 'auto', fontSize: '12px', fontWeight: 600, color: '#555' }}>${room.pricePerPerson}/pp</span>
-      </div>
-      {room.themes.length > 0 && (
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', marginTop: '8px' }}>
-          {room.themes.map(t => (
-            <span key={t} style={{ fontSize: '10px', background: '#F5F5F5', color: '#888', padding: '2px 6px', borderRadius: '4px' }}>{t}</span>
+    <div style={{ padding: '4px', minWidth: '200px', maxWidth: '240px', fontFamily: 'Inter, system-ui, sans-serif' }}>
+      <div style={{ fontWeight: 700, fontSize: '13px', color: '#1A1A1A', marginBottom: '2px' }}>{stop.name}</div>
+      {!bonus && <div style={{ fontSize: '11px', color: '#888', marginBottom: '6px' }}>{stop.address}</div>}
+      {stop.description && <div style={{ fontSize: '12px', color: '#555', marginBottom: '6px' }}>{stop.description}</div>}
+      {bonus && <div style={{ fontSize: '12px', color: '#555', marginBottom: '6px' }}>{stop.note}</div>}
+      {stop.hours && (
+        <div style={{ fontSize: '11px', color: '#555', marginBottom: '6px' }}>
+          {stop.hours.map(([days, hours]) => (
+            <div key={days}>{days}: {hours}</div>
           ))}
         </div>
       )}
-    </button>
+      {stop.walkToNext && (
+        <div style={{ fontSize: '11px', color: '#999', marginBottom: '6px' }}>🚶 {stop.walkToNext.duration} to next stop ({stop.walkToNext.distance})</div>
+      )}
+      {!bonus && (
+        <a href={buildStopMapsUrl(stop)} target="_blank" rel="noreferrer" style={{ fontSize: '11px', fontWeight: 600, color: route ? route.color : '#1B3A5C', textDecoration: 'none' }}>
+          Open in Google Maps ↗
+        </a>
+      )}
+    </div>
   )
 }
+
+function ApiKeyNotice() {
+  return (
+    <div style={noticeStyle}>
+      <div style={{ fontWeight: 700, marginBottom: '6px' }}>Google Maps API key needed</div>
+      <div>
+        Add a key to <code>VITE_GOOGLE_MAPS_API_KEY</code> in a <code>.env</code> file (see <code>.env.example</code>) with the
+        Maps JavaScript API enabled, then restart the dev server.
+      </div>
+    </div>
+  )
+}
+
+const noticeStyle = {
+  position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+  textAlign: 'center', padding: '32px', fontSize: '13px', color: '#555', background: '#F3EEE0', maxWidth: '360px',
+  margin: 'auto', height: 'fit-content', borderRadius: '14px', top: '50%', transform: 'translateY(-50%)',
+}
+
+const legendStyle = {
+  position: 'absolute', bottom: '12px', right: '12px', zIndex: 10, background: '#fff', borderRadius: '10px',
+  padding: '8px 12px', boxShadow: '0 2px 8px rgba(0,0,0,0.12)',
+}
+
+const shareButtonStyle = {
+  marginLeft: 'auto', fontSize: '12px', fontWeight: 600, padding: '6px 14px', borderRadius: '9999px',
+  border: '1px solid #1B3A5C', background: '#1B3A5C', color: '#fff', cursor: 'pointer',
+}
+
+const MAP_STYLE = [
+  { elementType: 'geometry', stylers: [{ color: '#FDF8F0' }] },
+  { elementType: 'labels.text.fill', stylers: [{ color: '#6b6b6b' }] },
+  { elementType: 'labels.text.stroke', stylers: [{ color: '#FDF8F0' }] },
+  { featureType: 'road', elementType: 'geometry', stylers: [{ color: '#ffffff' }] },
+  { featureType: 'road.arterial', elementType: 'geometry', stylers: [{ color: '#f5efe0' }] },
+  { featureType: 'water', elementType: 'geometry', stylers: [{ color: '#cfe3ea' }] },
+  { featureType: 'poi.park', elementType: 'geometry', stylers: [{ color: '#e3ecd9' }] },
+  { featureType: 'poi', elementType: 'labels', stylers: [{ visibility: 'off' }] },
+  { featureType: 'transit', elementType: 'labels', stylers: [{ visibility: 'off' }] },
+]
