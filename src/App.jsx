@@ -1,10 +1,9 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
-import { GoogleMap, Marker, InfoWindow, Polyline, useJsApiLoader } from '@react-google-maps/api'
+import { MapContainer, TileLayer, Marker, Popup, Polyline, useMap } from 'react-leaflet'
+import L from 'leaflet'
 import { ROUTES, ROUTE_COLORS, BONUS_STOPS, CHALLENGE_ITEMS } from './data'
 
-const GOOGLE_MAPS_API_KEY = import.meta.env.VITE_GOOGLE_MAPS_API_KEY || ''
-
-const CENTER = { lat: 40.7280, lng: -73.9900 }
+const CENTER = [40.7280, -73.9900]
 
 const VALID_ROUTE_PARAMS = new Set(['1', '2', 'both'])
 
@@ -17,9 +16,9 @@ function getInitialRouteParam() {
 // Route 2's copy slightly so both markers stay visible when both routes show.
 function stopPosition(routeId, stop) {
   if (routeId === 2) {
-    return { lat: stop.lat - 0.00007, lng: stop.lng + 0.00014 }
+    return [stop.lat - 0.00007, stop.lng + 0.00014]
   }
-  return { lat: stop.lat, lng: stop.lng }
+  return [stop.lat, stop.lng]
 }
 
 function buildDirectionsUrl(route) {
@@ -33,11 +32,7 @@ function buildDirectionsUrl(route) {
 }
 
 function buildStopMapsUrl(stop) {
-  const params = new URLSearchParams({
-    api: '1',
-    query: `${stop.lat},${stop.lng}`,
-    query_place_id: '',
-  })
+  const params = new URLSearchParams({ api: '1', query: `${stop.lat},${stop.lng}` })
   return `https://www.google.com/maps/search/?${params.toString()}`
 }
 
@@ -50,44 +45,69 @@ function buildShareUrl(routeParam) {
 
 function makeNumberedIcon(color, label, { big } = {}) {
   const size = big ? 34 : 28
-  const fontSize = big ? 14 : 12
-  const svg = `
+  const fontSize = big ? 15 : 13
+  const html = `
     <svg width="${size}" height="${size}" viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg">
       <circle cx="20" cy="20" r="17" fill="${color}" stroke="white" stroke-width="3"/>
       <text x="20" y="26" text-anchor="middle" font-family="Inter, system-ui, sans-serif" font-size="${fontSize * 1.4}" font-weight="700" fill="white">${label}</text>
     </svg>`
-  return {
-    url: `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`,
-    scaledSize: new window.google.maps.Size(size, size),
-    anchor: new window.google.maps.Point(size / 2, size / 2),
-  }
+  return L.divIcon({
+    className: '',
+    html,
+    iconSize: [size, size],
+    iconAnchor: [size / 2, size / 2],
+    popupAnchor: [0, -size / 2],
+  })
 }
 
 function makeBonusIcon(emoji) {
-  const svg = `
+  const html = `
     <svg width="30" height="30" viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg">
       <circle cx="20" cy="20" r="17" fill="#FDF8F0" stroke="#C9A86A" stroke-width="2.5"/>
       <text x="20" y="27" text-anchor="middle" font-size="18">${emoji}</text>
     </svg>`
-  return {
-    url: `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`,
-    scaledSize: new window.google.maps.Size(30, 30),
-    anchor: new window.google.maps.Point(15, 15),
-  }
+  return L.divIcon({
+    className: '',
+    html,
+    iconSize: [30, 30],
+    iconAnchor: [15, 15],
+    popupAnchor: [0, -15],
+  })
+}
+
+function FitBounds({ visibleRouteIds, showBonus }) {
+  const map = useMap()
+  useEffect(() => {
+    const points = []
+    visibleRouteIds.forEach(routeId => {
+      ROUTES[routeId].stops.forEach(stop => points.push(stopPosition(routeId, stop)))
+    })
+    if (showBonus) BONUS_STOPS.forEach(stop => points.push([stop.lat, stop.lng]))
+    if (points.length) map.fitBounds(L.latLngBounds(points), { padding: [48, 48] })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visibleRouteIds.join(','), showBonus, map])
+  return null
+}
+
+function FlyToActive({ activeStopId, position, markerRefs }) {
+  const map = useMap()
+  useEffect(() => {
+    if (activeStopId && position) {
+      map.flyTo(position, 16, { duration: 0.8 })
+      setTimeout(() => markerRefs.current[activeStopId]?.openPopup(), 850)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeStopId])
+  return null
 }
 
 export default function App() {
-  const { isLoaded, loadError } = useJsApiLoader({
-    id: 'nyc-book-crawl-map',
-    googleMapsApiKey: GOOGLE_MAPS_API_KEY,
-  })
-
   const [routeParam, setRouteParam] = useState(getInitialRouteParam)
   const [activeStopId, setActiveStopId] = useState(null)
   const [showBonus, setShowBonus] = useState(true)
   const [shareStatus, setShareStatus] = useState('idle')
   const [checked, setChecked] = useState(() => CHALLENGE_ITEMS.map(() => false))
-  const mapRef = useRef(null)
+  const markerRefs = useRef({})
 
   const visibleRouteIds = routeParam === 'both' ? [1, 2] : [Number(routeParam)]
 
@@ -102,51 +122,17 @@ export default function App() {
     const map = {}
     Object.values(ROUTES).forEach(route => {
       route.stops.forEach(stop => {
-        map[stop.id] = { stop, route }
+        map[stop.id] = { stop, route, position: stopPosition(route.id, stop) }
       })
     })
     BONUS_STOPS.forEach(stop => {
-      map[stop.id] = { stop, bonus: true }
+      map[stop.id] = { stop, bonus: true, position: [stop.lat, stop.lng] }
     })
     return map
   }, [])
 
-  const fitToVisible = useCallback((map, ids, bonus) => {
-    if (!window.google) return
-    const bounds = new window.google.maps.LatLngBounds()
-    let any = false
-    ids.forEach(routeId => {
-      ROUTES[routeId].stops.forEach(stop => {
-        bounds.extend(stopPosition(routeId, stop))
-        any = true
-      })
-    })
-    if (bonus) {
-      BONUS_STOPS.forEach(stop => {
-        bounds.extend({ lat: stop.lat, lng: stop.lng })
-        any = true
-      })
-    }
-    if (any) map.fitBounds(bounds, 48)
-  }, [])
-
-  const onMapLoad = useCallback(map => {
-    mapRef.current = map
-    fitToVisible(map, visibleRouteIds, showBonus)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
-
-  useEffect(() => {
-    if (mapRef.current) fitToVisible(mapRef.current, visibleRouteIds, showBonus)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [routeParam, showBonus, isLoaded])
-
-  const goToStop = useCallback((stop, routeId) => {
+  const goToStop = useCallback(stop => {
     setActiveStopId(stop.id)
-    if (mapRef.current) {
-      mapRef.current.panTo(routeId ? stopPosition(routeId, stop) : { lat: stop.lat, lng: stop.lng })
-      mapRef.current.setZoom(16)
-    }
   }, [])
 
   const handleShare = useCallback(async () => {
@@ -190,97 +176,68 @@ export default function App() {
 
       <div className="main-layout">
         <div className="map-pane">
-          {!GOOGLE_MAPS_API_KEY && <ApiKeyNotice />}
-          {GOOGLE_MAPS_API_KEY && loadError && (
-            <div style={noticeStyle}>Google Maps failed to load. Check that <code>VITE_GOOGLE_MAPS_API_KEY</code> is valid and enabled for the Maps JavaScript API.</div>
-          )}
-          {GOOGLE_MAPS_API_KEY && !loadError && !isLoaded && (
-            <div style={noticeStyle}>Loading map…</div>
-          )}
-          {GOOGLE_MAPS_API_KEY && isLoaded && (
-            <GoogleMap
-              mapContainerStyle={{ width: '100%', height: '100%' }}
-              center={CENTER}
-              zoom={13}
-              onLoad={onMapLoad}
-              options={{
-                streetViewControl: false,
-                mapTypeControl: false,
-                fullscreenControl: true,
-                clickableIcons: false,
-                styles: MAP_STYLE,
-              }}
-              onClick={() => setActiveStopId(null)}
-            >
-              {visibleRouteIds.map(routeId => {
-                const route = ROUTES[routeId]
-                return (
-                  <Polyline
-                    key={routeId}
-                    path={route.stops.map(stop => stopPosition(routeId, stop))}
-                    options={{
-                      strokeColor: route.color,
-                      strokeOpacity: 0,
-                      icons: [{
-                        icon: { path: 'M 0,-1 0,1', strokeOpacity: 1, scale: 3 },
-                        offset: '0',
-                        repeat: '12px',
-                      }],
-                      zIndex: 1,
-                    }}
-                  />
-                )
-              })}
+          <MapContainer center={CENTER} zoom={13} style={{ width: '100%', height: '100%' }} scrollWheelZoom={true}>
+            <TileLayer
+              attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+              url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+            />
 
-              {visibleRouteIds.flatMap(routeId => {
-                const route = ROUTES[routeId]
-                return route.stops.map(stop => (
-                  <Marker
-                    key={stop.id}
-                    position={stopPosition(routeId, stop)}
-                    icon={makeNumberedIcon(route.color, stop.order, { big: activeStopId === stop.id })}
-                    zIndex={activeStopId === stop.id ? 1000 : 10}
-                    onClick={() => goToStop(stop, routeId)}
-                  />
-                ))
-              })}
+            {visibleRouteIds.map(routeId => (
+              <Polyline
+                key={routeId}
+                positions={ROUTES[routeId].stops.map(stop => stopPosition(routeId, stop))}
+                pathOptions={{ color: ROUTES[routeId].color, weight: 4, dashArray: '2 10', lineCap: 'round' }}
+              />
+            ))}
 
-              {showBonus && BONUS_STOPS.map(stop => (
+            {visibleRouteIds.flatMap(routeId => {
+              const route = ROUTES[routeId]
+              return route.stops.map(stop => (
                 <Marker
                   key={stop.id}
-                  position={{ lat: stop.lat, lng: stop.lng }}
-                  icon={makeBonusIcon(stop.icon)}
-                  zIndex={5}
-                  onClick={() => goToStop(stop)}
-                />
-              ))}
-
-              {active && (
-                <InfoWindow
-                  position={active.route ? stopPosition(active.route.id, active.stop) : { lat: active.stop.lat, lng: active.stop.lng }}
-                  onCloseClick={() => setActiveStopId(null)}
+                  position={stopPosition(routeId, stop)}
+                  icon={makeNumberedIcon(route.color, stop.order, { big: activeStopId === stop.id })}
+                  ref={el => { markerRefs.current[stop.id] = el }}
+                  eventHandlers={{ click: () => goToStop(stop) }}
                 >
-                  <StopDetails entry={active} />
-                </InfoWindow>
-              )}
-            </GoogleMap>
-          )}
+                  <Popup>
+                    <StopDetails entry={{ stop, route }} />
+                  </Popup>
+                </Marker>
+              ))
+            })}
 
-          {GOOGLE_MAPS_API_KEY && isLoaded && (
-            <div style={legendStyle}>
-              {visibleRouteIds.map(routeId => (
-                <div key={routeId} style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11px', fontWeight: 600, marginBottom: '2px' }}>
-                  <span style={{ width: '14px', height: '3px', borderRadius: '2px', background: ROUTES[routeId].color, display: 'inline-block' }} />
-                  {ROUTES[routeId].subtitle}: {ROUTES[routeId].name}
-                </div>
-              ))}
-              {showBonus && (
-                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11px', color: '#999', marginTop: '2px' }}>
-                  <span>⭐</span> Bonus stops
-                </div>
-              )}
-            </div>
-          )}
+            {showBonus && BONUS_STOPS.map(stop => (
+              <Marker
+                key={stop.id}
+                position={[stop.lat, stop.lng]}
+                icon={makeBonusIcon(stop.icon)}
+                ref={el => { markerRefs.current[stop.id] = el }}
+                eventHandlers={{ click: () => goToStop(stop) }}
+              >
+                <Popup>
+                  <StopDetails entry={{ stop, bonus: true }} />
+                </Popup>
+              </Marker>
+            ))}
+
+            <FitBounds visibleRouteIds={visibleRouteIds} showBonus={showBonus} />
+            {active && <FlyToActive activeStopId={activeStopId} position={active.position} markerRefs={markerRefs} />}
+          </MapContainer>
+
+          <div style={legendStyle}>
+            {visibleRouteIds.map(routeId => (
+              <div key={routeId} style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11px', fontWeight: 600, marginBottom: '2px' }}>
+                <span style={{ width: '14px', height: '3px', borderRadius: '2px', background: ROUTES[routeId].color, display: 'inline-block' }} />
+                {ROUTES[routeId].subtitle}: {ROUTES[routeId].name}
+              </div>
+            ))}
+            {showBonus && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11px', color: '#999', marginTop: '2px' }}>
+                <span>⭐</span> Bonus stops
+              </div>
+            )}
+          </div>
         </div>
 
         <div className="sidebar-pane">
@@ -290,7 +247,7 @@ export default function App() {
                 key={routeId}
                 route={ROUTES[routeId]}
                 activeStopId={activeStopId}
-                onSelectStop={stop => goToStop(stop, routeId)}
+                onSelectStop={stop => goToStop(stop)}
               />
             ))}
 
@@ -427,7 +384,7 @@ function SectionCard({ title, children }) {
 function StopDetails({ entry }) {
   const { stop, route, bonus } = entry
   return (
-    <div style={{ padding: '4px', minWidth: '200px', maxWidth: '240px', fontFamily: 'Inter, system-ui, sans-serif' }}>
+    <div style={{ padding: '2px', minWidth: '190px', maxWidth: '230px', fontFamily: 'Inter, system-ui, sans-serif' }}>
       <div style={{ fontWeight: 700, fontSize: '13px', color: '#1A1A1A', marginBottom: '2px' }}>{stop.name}</div>
       {!bonus && <div style={{ fontSize: '11px', color: '#888', marginBottom: '6px' }}>{stop.address}</div>}
       {stop.description && <div style={{ fontSize: '12px', color: '#555', marginBottom: '6px' }}>{stop.description}</div>}
@@ -451,26 +408,8 @@ function StopDetails({ entry }) {
   )
 }
 
-function ApiKeyNotice() {
-  return (
-    <div style={noticeStyle}>
-      <div style={{ fontWeight: 700, marginBottom: '6px' }}>Google Maps API key needed</div>
-      <div>
-        Add a key to <code>VITE_GOOGLE_MAPS_API_KEY</code> in a <code>.env</code> file (see <code>.env.example</code>) with the
-        Maps JavaScript API enabled, then restart the dev server.
-      </div>
-    </div>
-  )
-}
-
-const noticeStyle = {
-  position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
-  textAlign: 'center', padding: '32px', fontSize: '13px', color: '#555', background: '#F3EEE0', maxWidth: '360px',
-  margin: 'auto', height: 'fit-content', borderRadius: '14px', top: '50%', transform: 'translateY(-50%)',
-}
-
 const legendStyle = {
-  position: 'absolute', bottom: '12px', right: '12px', zIndex: 10, background: '#fff', borderRadius: '10px',
+  position: 'absolute', bottom: '12px', right: '12px', zIndex: 1000, background: '#fff', borderRadius: '10px',
   padding: '8px 12px', boxShadow: '0 2px 8px rgba(0,0,0,0.12)',
 }
 
@@ -478,15 +417,3 @@ const shareButtonStyle = {
   marginLeft: 'auto', fontSize: '12px', fontWeight: 600, padding: '6px 14px', borderRadius: '9999px',
   border: '1px solid #1B3A5C', background: '#1B3A5C', color: '#fff', cursor: 'pointer',
 }
-
-const MAP_STYLE = [
-  { elementType: 'geometry', stylers: [{ color: '#FDF8F0' }] },
-  { elementType: 'labels.text.fill', stylers: [{ color: '#6b6b6b' }] },
-  { elementType: 'labels.text.stroke', stylers: [{ color: '#FDF8F0' }] },
-  { featureType: 'road', elementType: 'geometry', stylers: [{ color: '#ffffff' }] },
-  { featureType: 'road.arterial', elementType: 'geometry', stylers: [{ color: '#f5efe0' }] },
-  { featureType: 'water', elementType: 'geometry', stylers: [{ color: '#cfe3ea' }] },
-  { featureType: 'poi.park', elementType: 'geometry', stylers: [{ color: '#e3ecd9' }] },
-  { featureType: 'poi', elementType: 'labels', stylers: [{ visibility: 'off' }] },
-  { featureType: 'transit', elementType: 'labels', stylers: [{ visibility: 'off' }] },
-]
